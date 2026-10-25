@@ -17,6 +17,13 @@ import (
 // cacheDirPermission is used when creating the on-disk download cache directory.
 const cacheDirPermission os.FileMode = 0o750
 
+// maxDownloadSize is the hard upper bound on a single list source body. The parser streams, so
+// memory stays bounded, but the on-disk download cache and the resulting in-memory list grow with
+// the source, and the parse occupies a worker for the whole download. A compromised or malicious
+// list host could otherwise stream until the disk fills. Real-world blocklists are well under
+// 100 MB, so a larger body almost certainly means something is wrong.
+const maxDownloadSize int64 = 100 << 20
+
 // TransientError represents a temporary error like timeout, network errors...
 type TransientError struct {
 	inner error
@@ -111,46 +118,14 @@ func (d *httpDownloader) download(ctx context.Context, link string, reqHeader ht
 
 	err := retry.Do(
 		func() error {
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, link, nil)
+			resp, err := d.attempt(ctx, link, reqHeader)
 			if err != nil {
-				return fmt.Errorf("failed to create HTTP request for '%s': %w", link, err)
+				return err
 			}
 
-			for name, values := range reqHeader {
-				for _, value := range values {
-					req.Header.Add(name, value)
-				}
-			}
+			result = resp
 
-			resp, httpErr := d.client.Do(req)
-			if httpErr == nil {
-				if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNotModified {
-					result = &downloadResponse{statusCode: resp.StatusCode, header: resp.Header, body: resp.Body}
-
-					if resp.StatusCode == http.StatusNotModified {
-						// Drain body before closing to allow connection reuse
-						_, _ = io.Copy(io.Discard, resp.Body)
-						_ = resp.Body.Close()
-						result.body = nil
-					}
-
-					return nil
-				}
-
-				// Drain body before closing to allow connection reuse
-				// See: https://pkg.go.dev/net/http#Response.Body
-				_, _ = io.Copy(io.Discard, resp.Body)
-				_ = resp.Body.Close()
-
-				return &httpStatusError{code: resp.StatusCode}
-			}
-
-			var netErr net.Error
-			if errors.As(httpErr, &netErr) && netErr.Timeout() {
-				return &TransientError{inner: netErr}
-			}
-
-			return fmt.Errorf("HTTP request to '%s' failed: %w", link, httpErr)
+			return nil
 		},
 		retry.Attempts(d.cfg.Attempts),
 		retry.DelayType(retry.FixedDelay),
@@ -161,7 +136,97 @@ func (d *httpDownloader) download(ctx context.Context, link string, reqHeader ht
 		return nil, fmt.Errorf("failed to download file from '%s': %w", link, err)
 	}
 
+	if result.body != nil {
+		// Enforce the cap while reading too: Content-Length is advisory and absent on
+		// chunked responses. Read one byte past the cap so an over-limit body is
+		// distinguishable from one that is exactly at the limit.
+		result.body = &limitedReadCloser{
+			ReadCloser: result.body,
+			link:       link,
+			remaining:  maxDownloadSize,
+		}
+	}
+
 	return result, nil
+}
+
+// attempt performs a single download attempt. A non-nil error means the attempt is
+// retryable; the caller turns it into a user-facing error once retries are exhausted.
+func (d *httpDownloader) attempt(
+	ctx context.Context, link string, reqHeader http.Header,
+) (*downloadResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, link, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP request for '%s': %w", link, err)
+	}
+
+	for name, values := range reqHeader {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
+
+	resp, httpErr := d.client.Do(req)
+	if httpErr != nil {
+		var netErr net.Error
+		if errors.As(httpErr, &netErr) && netErr.Timeout() {
+			return nil, &TransientError{inner: netErr}
+		}
+
+		return nil, fmt.Errorf("HTTP request to '%s' failed: %w", link, httpErr)
+	}
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotModified {
+		// Drain body before closing to allow connection reuse
+		// See: https://pkg.go.dev/net/http#Response.Body
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+
+		return nil, &httpStatusError{code: resp.StatusCode}
+	}
+
+	// A declared size over the cap is rejected before any of the body is read.
+	if resp.ContentLength > maxDownloadSize {
+		_ = resp.Body.Close()
+
+		return nil, fmt.Errorf("download '%s' is %d bytes, over the %d byte limit",
+			link, resp.ContentLength, maxDownloadSize)
+	}
+
+	result := &downloadResponse{statusCode: resp.StatusCode, header: resp.Header, body: resp.Body}
+
+	if resp.StatusCode == http.StatusNotModified {
+		// Drain body before closing to allow connection reuse
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		result.body = nil
+	}
+
+	return result, nil
+}
+
+// limitedReadCloser fails the read once more than limit bytes have been consumed, instead of
+// silently truncating, so an over-sized source surfaces as an error rather than a partial list.
+type limitedReadCloser struct {
+	io.ReadCloser
+
+	link      string
+	remaining int64
+}
+
+func (l *limitedReadCloser) Read(p []byte) (int, error) {
+	if l.remaining < 0 {
+		return 0, fmt.Errorf("download '%s' exceeds the %d byte limit", l.link, maxDownloadSize)
+	}
+
+	if int64(len(p)) > l.remaining+1 {
+		p = p[:l.remaining+1]
+	}
+
+	n, err := l.ReadCloser.Read(p)
+	l.remaining -= int64(n)
+
+	return n, err
 }
 
 // logRetry returns a retry.OnRetry callback that logs the cause of each failed

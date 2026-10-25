@@ -91,6 +91,47 @@ var _ = Describe("Downloader", func() {
 				Expect(buf.String()).Should(Equal("line.one\nline.two"))
 			})
 		})
+		When("the source is larger than the size limit", func() {
+			It("rejects a declared oversize body before reading it", func(ctx context.Context) {
+				server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+					rw.Header().Set("Content-Length", "999999999999")
+					rw.WriteHeader(http.StatusOK)
+				}))
+				DeferCleanup(server.Close)
+
+				sutConfig.Attempts = 1
+
+				_, err := sut.DownloadFile(ctx, server.URL)
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("over the"))
+			})
+		})
+
+		When("a chunked source exceeds the size limit without Content-Length", func() {
+			It("fails during the read instead of truncating", func(ctx context.Context) {
+				server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+					// No Content-Length: the handler streams, so only the read cap applies.
+					chunk := make([]byte, 1<<20)
+					for range 110 {
+						if _, err := rw.Write(chunk); err != nil {
+							return
+						}
+					}
+				}))
+				DeferCleanup(server.Close)
+
+				sutConfig.Attempts = 1
+
+				reader, err := sut.DownloadFile(ctx, server.URL)
+				Expect(err).Should(Succeed())
+				DeferCleanup(reader.Close)
+
+				_, err = io.Copy(io.Discard, reader)
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("exceeds the"))
+			})
+		})
+
 		When("Server returns NOT_FOUND (404)", func() {
 			BeforeEach(func() {
 				server = httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {

@@ -41,9 +41,20 @@ type lines struct {
 	lineNo  uint
 }
 
+const (
+	// initialScannerBuffer is the buffer bufio.Scanner starts with.
+	initialScannerBuffer = 64 * 1024
+	// maxScannerBuffer is the longest single line accepted from a source. bufio.Scanner defaults
+	// to 64 KiB, which real lists exceed (minified lists, base64 blobs), and an over-long line
+	// is a non-resumable error that discards the rest of the file. Raising the ceiling keeps
+	// such a list usable while still bounding memory per line.
+	maxScannerBuffer = 4 * 1024 * 1024
+)
+
 func newLines(r io.Reader) SeriesParser[string] {
 	scanner := bufio.NewScanner(r)
 	scanner.Split(bufio.ScanLines)
+	scanner.Buffer(make([]byte, initialScannerBuffer), maxScannerBuffer)
 
 	return &lines{scanner: scanner}
 }

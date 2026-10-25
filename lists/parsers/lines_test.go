@@ -129,7 +129,7 @@ var _ = Describe("Lines", func() {
 	When("there's a scan error", func() {
 		BeforeEach(func() {
 			sutReader = linesReader(
-				"too long " + strings.Repeat(".", bufio.MaxScanTokenSize),
+				"too long " + strings.Repeat(".", maxScannerBuffer),
 			)
 		})
 
@@ -137,6 +137,26 @@ var _ = Describe("Lines", func() {
 			_, err := sut.Next(context.Background())
 			Expect(err).Should(HaveOccurred())
 			Expect(sut.Position()).Should(Equal("line 1"))
+		})
+	})
+
+	When("a line is longer than the bufio.Scanner default of 64 KiB", func() {
+		// Such a line used to abort the whole parse with a non-resumable error,
+		// silently leaving the group empty and thus blocking nothing.
+		longLine := "long." + strings.Repeat("a", 2*bufio.MaxScanTokenSize) + ".example"
+
+		BeforeEach(func() {
+			sutReader = linesReader(longLine, "after.example")
+		})
+
+		It("still yields it and the following lines", func() {
+			str, err := sut.Next(context.Background())
+			Expect(err).Should(Succeed())
+			Expect(str).Should(Equal(longLine))
+
+			str, err = sut.Next(context.Background())
+			Expect(err).Should(Succeed())
+			Expect(str).Should(Equal("after.example"))
 		})
 	})
 
