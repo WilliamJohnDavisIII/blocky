@@ -177,6 +177,16 @@ func (r *quicUpstreamClient) exchangeDoQ(
 		return nil, fmt.Errorf("can't unpack response: %w", err)
 	}
 
+	// RFC 9250 §4.2: the ID is zeroed on the wire and the response must carry ID 0.
+	// Validate before restoring the original ID, otherwise the check can never fail.
+	if resp.Id != 0 {
+		return nil, fmt.Errorf("DoQ response has non-zero ID %d", resp.Id)
+	}
+
+	if !responseMatchesRequest(msg, resp) {
+		return nil, errors.New("DoQ response question does not match the request")
+	}
+
 	// Restore the original message ID in the response
 	resp.Id = originalID
 

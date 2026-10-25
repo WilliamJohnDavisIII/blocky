@@ -383,6 +383,16 @@ func (r *httpUpstreamClient) callExternal(
 		return nil, 0, fmt.Errorf("can't unpack message: %w", err)
 	}
 
+	// Unlike the UDP path (see exchangeUDPWithTCPFallback), the connection-oriented
+	// transport never validated the answer against the query. A DoH upstream that answers
+	// a different question - buggy, misrouted or malicious - would have its answer cached
+	// under the queried name and served to every client for the answer's TTL. The ID check
+	// matters most here: DoH has no other binding to the request.
+	if response.Id != msg.Id || !responseMatchesRequest(msg, &response) {
+		return nil, 0, fmt.Errorf("DoH response does not match the request (id %d, %d questions)",
+			response.Id, len(response.Question))
+	}
+
 	return &response, time.Since(start), nil
 }
 

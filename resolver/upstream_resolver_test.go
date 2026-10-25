@@ -7,8 +7,10 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -556,6 +558,57 @@ var _ = Describe("UpstreamResolver", Label("upstreamResolver"), func() {
 				Expect(err.Error()).Should(ContainSubstring("can't read response body"))
 			})
 		})
+		When("Configured DoH resolver answers a different question", func() {
+			JustBeforeEach(func() {
+				// Bypass newTestDOHUpstream: it calls SetReply, which would force the ID and
+				// question to match. This server answers whatever it is asked with a reply to
+				// a different name, as a buggy or malicious upstream would.
+				server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					Expect(err).Should(Succeed())
+
+					req := new(dns.Msg)
+					Expect(req.Unpack(body)).Should(Succeed())
+
+					other := new(dns.Msg)
+					other.SetQuestion("other.example.com.", dns.TypeA)
+					other.Id = req.Id
+
+					packed, err := other.Pack()
+					Expect(err).Should(Succeed())
+
+					w.Header().Set("Content-Type", "application/dns-message")
+					_, _ = w.Write(packed)
+				}))
+				DeferCleanup(server.Close)
+
+				addr := server.URL[len("https://"):]
+				host, portStr, err := net.SplitHostPort(addr)
+				Expect(err).Should(Succeed())
+
+				port, err := strconv.ParseUint(portStr, 10, 16)
+				Expect(err).Should(Succeed())
+
+				sutConfig.Upstream = config.Upstream{
+					Net:  config.NetProtocolHttps,
+					Host: host,
+					Port: uint16(port),
+					Path: "/dns-query",
+				}
+
+				sut = newUpstreamResolverUnchecked(sutConfig, nil)
+
+				sut.upstreamClient.(*httpUpstreamClient).client.Transport.(*http.Transport).
+					TLSClientConfig.InsecureSkipVerify = true
+			})
+
+			It("should reject the answer instead of caching it under the queried name", func() {
+				_, err := sut.Resolve(ctx, newRequest("example.com.", A))
+				Expect(err).Should(HaveOccurred())
+				Expect(err.Error()).Should(ContainSubstring("does not match the request"))
+			})
+		})
+
 		When("Configured DoH resolver returns wrong content", func() {
 			BeforeEach(func() {
 				modifyHTTPRespFn = func(w http.ResponseWriter) {
