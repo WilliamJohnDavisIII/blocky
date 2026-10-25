@@ -1,9 +1,9 @@
 package util
 
 import (
-	"fmt"
 	"slices"
 
+	"github.com/0xERR0R/blocky/log"
 	"github.com/miekg/dns"
 )
 
@@ -48,12 +48,18 @@ func GetEdns0Option[T EDNS0Option](msg *dns.Msg) T {
 
 	for _, o := range opt.Option {
 		if o.Option() == t.Option() {
-			t, ok := o.(T)
+			typed, ok := o.(T)
 			if !ok {
-				panic(fmt.Errorf("dns option with code %d is not of type %T", t.Option(), t))
+				// The option code matches but the concrete type does not (a library
+				// change or a hand-built message could cause this). Report it to the
+				// caller as "not found" instead of panicking on a client-supplied
+				// query.
+				log.Log().Debugf("dns option with code %d is not of type %T", t.Option(), t)
+
+				return nil
 			}
 
-			return t
+			return typed
 		}
 	}
 

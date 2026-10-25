@@ -116,6 +116,24 @@ var _ = Describe("EDNS0 utils", func() {
 				Expect(GetEdns0Option[*dns.EDNS0_SUBNET](nil)).Should(BeNil())
 			})
 		})
+
+		When("the option code matches but the concrete type does not", func() {
+			BeforeEach(func() {
+				opt := new(dns.OPT)
+				opt.Hdr.Name = "."
+				opt.Hdr.Rrtype = dns.TypeOPT
+				// An unparsed/opaque option that still reports the SUBNET code.
+				local := new(dns.EDNS0_LOCAL)
+				local.Code = dns.EDNS0SUBNET
+				opt.Option = append(opt.Option, local)
+				baseMsg.Extra = append(baseMsg.Extra, opt)
+			})
+
+			It("should return nil instead of panicking", func() {
+				Expect(func() { GetEdns0Option[*dns.EDNS0_SUBNET](baseMsg) }).ShouldNot(Panic())
+				Expect(GetEdns0Option[*dns.EDNS0_SUBNET](baseMsg)).Should(BeNil())
+			})
+		})
 	})
 
 	Describe("RemoveEdns0Option", func() {
