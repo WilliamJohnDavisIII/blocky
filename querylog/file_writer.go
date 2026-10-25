@@ -18,7 +18,10 @@ import (
 
 const (
 	loggerPrefixFileWriter = "fileQueryLogWriter"
-	filePermission         = 0o666
+	// filePermission keeps the log readable by the service user and its group only. The
+	// log holds client IPs, client names and every queried domain - a full browsing
+	// history - so it must not be world-readable, even on a multi-user host.
+	filePermission = 0o640
 )
 
 var validFilePattern = regexp.MustCompile("[^a-zA-Z0-9-_]+")

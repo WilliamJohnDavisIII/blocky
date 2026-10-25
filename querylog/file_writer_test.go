@@ -94,6 +94,28 @@ var _ = Describe("FileWriter", func() {
 				}).Should(Equal(1))
 			})
 		})
+		Describe("file permissions", func() {
+			It("should not create world-readable log files", func() {
+				writer, err := NewCSVWriter(tmpDir.Path, false, 0)
+				Expect(err).Should(Succeed())
+
+				writer.Write(&LogEntry{ClientNames: []string{"c"}, Start: time.Now()})
+
+				path := tmpDir.JoinPath(time.Now().Format("2006-01-02") + "_ALL.log")
+
+				var info os.FileInfo
+				Eventually(func() error {
+					var statErr error
+					info, statErr = os.Stat(path)
+
+					return statErr
+				}).Should(Succeed())
+
+				Expect(info.Mode().Perm()&0o007).Should(Equal(os.FileMode(0)),
+					"world permissions should be empty")
+			})
+		})
+
 		When("Cleanup is called", func() {
 			It("should delete old files", func() {
 				writer, err = NewCSVWriter(tmpDir.Path, false, 1)
