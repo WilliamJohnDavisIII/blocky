@@ -116,7 +116,13 @@ func (i *OpenAPIInterfaceImpl) DisableBlocking(ctx context.Context,
 	}
 
 	if request.Params.Groups != nil && len(*request.Params.Groups) > 0 {
-		groups = strings.Split(*request.Params.Groups, ",")
+		for group := range strings.SplitSeq(*request.Params.Groups, ",") {
+			// Tolerate the whitespace people naturally write after a comma
+			// (`?groups=a, b`), which would otherwise fail group lookup.
+			if trimmed := strings.TrimSpace(group); trimmed != "" {
+				groups = append(groups, trimmed)
+			}
+		}
 	}
 
 	err = i.control.DisableBlocking(ctx, duration, groups)
