@@ -100,5 +100,17 @@ func (c *QueryLog) censoredTarget() string {
 		return target
 	}
 
-	return strings.ReplaceAll(target, pass, secretObfuscator)
+	// `parsed.User.Password()` returns the percent-decoded password, while `target` is the
+	// raw, still-encoded string. Replacing the decoded form therefore misses whenever the
+	// password contains a character that must be escaped in a URL (`@`, `:`, `/`, `%`, ...)
+	// and would print the secret verbatim. Redact the encoded forms as well.
+	out := strings.ReplaceAll(target, pass, secretObfuscator)
+
+	for _, escaped := range []string{url.QueryEscape(pass), url.PathEscape(pass)} {
+		if escaped != pass {
+			out = strings.ReplaceAll(out, escaped, secretObfuscator)
+		}
+	}
+
+	return out
 }
